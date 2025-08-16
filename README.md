@@ -1,3 +1,3 @@
 # MasterThesis
 MasterThesis
-Code for each module has been added to its respective branch.
+The control logic corresponding to each XC Safety component has been incorporated into its designated branch.
