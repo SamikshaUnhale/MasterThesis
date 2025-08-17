@@ -1,0 +1,238 @@
+(* Drive Instances *)
+VAR
+	Drive1 : DriveDataType; (* Instance of the struct for Drive 1 *)
+	Drive2 : DriveDataType; (* Instance of the struct for Drive 2 *)
+	Drive3 : DriveDataType; (* Instance of the struct for Drive 3 *) (* System Control Variables *)
+	PLCtime : REAL; (* Simulation time variable *)
+	EnableSystem : BOOL; (* System enable flag *)
+	ResetButton : BOOL; (* Reset button input *)
+	EmergencyStop_A : BOOL; (* E-Stop channel A *)
+	EmergencyStop_B : BOOL; (* E-Stop channel B *)
+	PowerFailure : BOOL; (* Power failure detection *) (* Timers for Debouncing & Safe Restart *)
+	PowerFailTimer : REAL; (* Timer for power failure debounce *)
+	ResetTimer : REAL; (* Timer to delay system reset *) (* STO signals for redundancy *)
+END_VAR
+
+TYPE
+	DriveStatusType : 
+		(
+		Idle := 0,
+		Running := 1,
+		STO_Triggered := 2,
+		Error := 3
+	);
+
+	DriveDataType : STRUCT
+		Controlword : UINT;  (* Control word for the drive *)
+		StatusWord : UINT;   (* Status word received from the drive *)
+		TargetVoltage : REAL; (* Target voltage (e.g., 230V) *)
+		ActualVoltage : REAL; (* Actual voltage measured by transducer *)
+		STO_Signal : BOOL;    (* STO signal (1 = active, 0 = inactive) *)
+		STO_Confirmed : BOOL; (* Verification that STO engaged *)
+		STO_A : BOOL; (* STO Channel A *)
+		STO_B : BOOL;(* STO Channel B *)
+		DriveStatus : DriveStatusType; (* Drive state using ENUM *)
+		PhaseU_Voltage : REAL; (* Voltage of phase U *)
+		PhaseV_Voltage : REAL; (* Voltage of phase V *)
+		PhaseW_Voltage : REAL; (* Voltage of phase W *)
+	END_STRUCT;
+END_TYPE
+
+PROGRAM _INIT
+	Drive1.Controlword := 0;
+	Drive1.StatusWord := 0;
+	Drive1.TargetVoltage := 230.0;
+	Drive1.ActualVoltage := 230.0;
+	Drive1.STO_Signal := FALSE;
+	Drive1.STO_Confirmed := FALSE;
+	Drive1.DriveStatus := Idle;
+	Drive1.PhaseU_Voltage := 230.0;
+	Drive1.PhaseV_Voltage := 230.0;
+	Drive1.PhaseW_Voltage := 230.0;
+	Drive1.STO_A:= FALSE;
+	Drive1.STO_B:= FALSE;
+
+	(* Copy settings for all drives *)
+	Drive2 := Drive1;  (* Copy values for Drive 2 *)
+	Drive3 := Drive1;  (* Copy values for Drive 3 *)
+
+	(* Initialize system variables *)
+	PLCtime := 0.0;
+	EnableSystem := FALSE;
+	ResetButton := FALSE;
+	EmergencyStop_A := FALSE;
+	EmergencyStop_B := FALSE;
+	PowerFailure := FALSE;
+	PowerFailTimer := 0.0;
+	ResetTimer := 0.0;
+END_PROGRAM
+
+PROGRAM _CYCLIC
+   (* Handle Power Failure with Debounce Timer *)
+	IF PowerFailure THEN
+		PowerFailTimer := PowerFailTimer + 0.01;
+		IF PowerFailTimer >= 0.5 THEN
+			Drive1.STO_A := TRUE;  
+			Drive1.STO_B := TRUE;  
+			Drive2.STO_A := TRUE;  
+			Drive2.STO_B := TRUE;  
+			Drive3.STO_A := TRUE;  
+			Drive3.STO_B := TRUE;  
+		END_IF;
+	ELSE
+		PowerFailTimer := 0.0;
+	END_IF;
+
+	(* Emergency Stop (Dual-Channel Safety) *)
+	IF (EmergencyStop_A = TRUE) OR (EmergencyStop_B = TRUE) THEN
+		Drive1.STO_A := TRUE;
+		Drive1.STO_B := TRUE;
+		Drive2.STO_A := TRUE;  
+		Drive2.STO_B := TRUE;  
+		Drive3.STO_A := TRUE;  
+		Drive3.STO_B := TRUE;
+	END_IF;
+
+	(* Verify STO Signals from Both Channels *)
+	IF Drive1.STO_A OR Drive1.STO_B THEN
+		Drive1.STO_Signal := TRUE;
+		Drive2.STO_Signal := TRUE;
+		Drive3.STO_Signal := TRUE;
+	ELSE
+		Drive1.STO_Signal := FALSE;
+		Drive2.STO_Signal := FALSE;
+		Drive3.STO_Signal := FALSE;
+	END_IF;
+
+	(* Safe State Handling: If STO signal is active, set the motor voltage to 0 *)
+	IF Drive1.STO_Signal THEN
+		Drive1.DriveStatus := STO_Triggered;
+		Drive1.ActualVoltage := 0.0;
+		Drive1.PhaseU_Voltage := 0.0;
+		Drive1.PhaseV_Voltage := 0.0;
+		Drive1.PhaseW_Voltage := 0.0;
+	ELSIF EnableSystem THEN
+		Drive1.DriveStatus := Running;
+		Drive1.PhaseU_Voltage := Drive1.ActualVoltage;
+		Drive1.PhaseV_Voltage := Drive1.ActualVoltage;
+		Drive1.PhaseW_Voltage := Drive1.ActualVoltage;
+	ELSE
+		Drive1.DriveStatus := Idle;
+		Drive1.PhaseU_Voltage := 0.0;
+		Drive1.PhaseV_Voltage := 0.0;
+		Drive1.PhaseW_Voltage := 0.0;
+	END_IF;
+
+	IF Drive2.STO_Signal THEN
+		Drive2.DriveStatus := STO_Triggered;
+		Drive2.ActualVoltage := 0.0;
+		Drive2.PhaseU_Voltage := 0.0;
+		Drive2.PhaseV_Voltage := 0.0;
+		Drive2.PhaseW_Voltage := 0.0;
+	ELSIF EnableSystem THEN
+		Drive2.DriveStatus := Running;
+		Drive2.PhaseU_Voltage := Drive2.ActualVoltage;
+		Drive2.PhaseV_Voltage := Drive2.ActualVoltage;
+		Drive2.PhaseW_Voltage := Drive2.ActualVoltage;
+	ELSE
+		Drive2.DriveStatus := Idle;
+		Drive2.PhaseU_Voltage := 0.0;
+		Drive2.PhaseV_Voltage := 0.0;
+		Drive2.PhaseW_Voltage := 0.0;
+	END_IF;
+
+	IF Drive3.STO_Signal THEN
+		Drive3.DriveStatus := STO_Triggered;
+		Drive3.ActualVoltage := 0.0;
+		Drive3.PhaseU_Voltage := 0.0;
+		Drive3.PhaseV_Voltage := 0.0;
+		Drive3.PhaseW_Voltage := 0.0;
+	ELSIF EnableSystem THEN
+		Drive3.DriveStatus := Running;
+		Drive3.PhaseU_Voltage := Drive3.ActualVoltage;
+		Drive3.PhaseV_Voltage := Drive3.ActualVoltage;
+		Drive3.PhaseW_Voltage := Drive3.ActualVoltage;
+	ELSE
+		Drive3.DriveStatus := Idle;
+		Drive3.PhaseU_Voltage := 0.0;
+		Drive3.PhaseV_Voltage := 0.0;
+		Drive3.PhaseW_Voltage := 0.0;
+	END_IF;
+
+	(* Reset Handling with Delay *)
+	IF ResetButton THEN
+		ResetTimer := ResetTimer + 0.01;
+		IF ResetTimer >= 2.0 THEN
+			IF NOT Drive1.STO_Confirmed THEN
+				Drive1.STO_Signal := FALSE;
+				Drive1.STO_A:= FALSE;
+				Drive1.STO_B:= FALSE;
+				Drive1.DriveStatus := Idle;
+			END_IF;
+			IF NOT Drive2.STO_Confirmed THEN
+				Drive2.STO_Signal := FALSE;
+				Drive2.STO_A:= FALSE;
+				Drive2.STO_B:= FALSE;
+				Drive2.DriveStatus := Idle;
+			END_IF;
+			IF NOT Drive3.STO_Confirmed THEN
+				Drive3.STO_Signal := FALSE;
+				Drive3.STO_A:= FALSE;
+				Drive3.STO_B:= FALSE;
+				Drive3.DriveStatus := Idle;
+			END_IF;
+			ResetTimer := 0.0;
+		END_IF;
+	ELSE
+		ResetTimer := 0.0;
+	END_IF;
+	
+	(* Ensure Drive Runs Again After Reset *)
+	IF EnableSystem AND NOT PowerFailure THEN
+		IF NOT Drive1.STO_Signal THEN
+			Drive1.DriveStatus := Running;
+		END_IF;
+		IF NOT Drive2.STO_Signal THEN
+			Drive2.DriveStatus := Running;
+		END_IF;
+		IF NOT Drive3.STO_Signal THEN
+			Drive3.DriveStatus := Running;
+		END_IF;
+	END_IF;
+
+
+	(* Simulating Voltage Fluctuations When Running *)
+	IF EnableSystem AND NOT PowerFailure AND NOT Drive1.STO_Signal THEN
+		PLCtime := PLCtime + 0.01;
+		Drive1.ActualVoltage := 220.0 + (10.0 * SIN(PLCtime));
+		Drive2.ActualVoltage := 220.0 + (10.0 * COS(PLCtime));
+		Drive3.ActualVoltage := 220.0 + (10.0 * SIN(PLCtime + 1.57));
+	END_IF;
+
+END_PROGRAM
+
+PROGRAM _EXIT
+ (* Reset Drive Data *)
+	Drive1.Controlword := 0;
+	Drive1.StatusWord := 0;
+	Drive1.ActualVoltage := 0.0;
+	Drive1.STO_A := FALSE;
+	Drive1.STO_B := FALSE;
+	Drive1.STO_Confirmed := FALSE;
+	Drive1.DriveStatus := Idle;
+
+	(* Copy settings to all drives *)
+	Drive2 := Drive1;
+	Drive3 := Drive1;
+
+	(* Reset system variables *)
+	PLCtime := 0.0;
+	EnableSystem := FALSE;
+	ResetButton := FALSE;
+	EmergencyStop_A := FALSE;
+	EmergencyStop_B := FALSE;
+	PowerFailure := FALSE;
+	PowerFailTimer := 0.0;
+	ResetTimer := 0.0;
+
+END_PROGRAM
