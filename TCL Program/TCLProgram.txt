@@ -1,0 +1,373 @@
+VAR
+	PowerRestored : BOOL;
+	DriveControl : DriveStateMachine; (* Magnetostrictive Sensor Data *)
+	SensorFeedback : SensorData; (* Locking System Data *)
+	Locking : LockingSystem; (* Emergency & Safety Control *)
+	Safety : SafetyControl; (* Testing & Debugging *)
+	Simulation : TestSimulation; (* Motion Control Variables *)
+	DriveState : INT := 0; (* Represents the state of the servo drive *)
+	PositionStep : DINT := 2; (* Step size for position update *)
+	VelocityStep : DINT := 5; (* Step size for velocity update *)
+	MotionComplete : BOOL := FALSE; (* Flag for stopping motion *)
+	PowerFailureDetected : BOOL := FALSE;
+	Initialized : BOOL := FALSE;
+
+END_VAR
+
+VAR CONSTANT
+
+END_VAR
+
+TYPE
+(* Structure to store Drive States *)
+	DriveStateMachine : 	STRUCT 
+		Statusword : DINT; (* 6041h - Drive status feedback *)
+		Controlword : DINT; (* 6040h - Control command *)
+		ModesOfOperation : INT; (* 6060h - Set operation mode *)
+		ModesDisplay : INT; (* 6061h - Displayed operation mode *)
+		TargetPosition : DINT; (* 607Ah - Target position for drive *)
+		TargetVelocity : DINT; (* 60FFh - Target velocity for drive *)
+		ActualPosition : DINT; (* 6064h - Actual position from drive *)
+		ActualVelocity : DINT; (* 606Ch - Actual velocity from drive *)
+	END_STRUCT;
+(* Structure to store Magnetostrictive Sensor Data *)
+	SensorData : 	STRUCT 
+		Position : DINT; (* Actual Position from Sensor *)
+		Velocity : DINT; (* Actual Velocity from Sensor *)
+		Fault_Inject_Enable : BOOL; (* Enable Fault Injection *)
+		Fault_Value : DINT; (* Fault Value to Inject *)
+	END_STRUCT;
+(* Structure to store Latch & Exchanger Locking System *)
+	LockingSystem : 	STRUCT 
+		Locked : BOOL; (* Latch Locked *)
+		Unlocked : BOOL; (* Latch Unlocked *)
+		Blocked : BOOL; (* Exchanger Blocked *)
+		Unblocked : BOOL; (* Exchanger Unblocked *)
+		ExchangerPosition : DINT; (* Position of exchanger: 0  or 90  *)
+	END_STRUCT;
+(* Structure for Emergency & Safety Control *)
+	SafetyControl : 	STRUCT 
+		STO_Activated : BOOL; (* Safe Torque Off Activation *)
+		Emergency_Stop : BOOL; (* Emergency stop flag *)
+		System_Reset : BOOL; (* System Reset flag *)
+		STO_A : BOOL;
+		STO_B : BOOL;
+	END_STRUCT;
+(* Structure for Testing and Debugging *)
+	TestSimulation : 	STRUCT 
+		TestScenario : INT; (* Selects which test case to execute *)
+	END_STRUCT;
+END_TYPE
+
+PROGRAM _INIT
+(* Initialize Simulation Variables *)
+(* Drive Control Initialization *)
+	DriveControl.Controlword := 0;              (* Default controlword: 0 *)
+	DriveControl.Statusword := 0;                (* Default statusword: 0 *)
+	DriveControl.ModesOfOperation := 1;         (* Default: Profile Position Mode *)
+	DriveControl.ModesDisplay := 1;             (* Default: Profile Position Mode displayed *)
+	DriveControl.TargetPosition := 0;            (* Start at position 0 *)
+	DriveControl.TargetVelocity := 0;            (* Start with 0 velocity, no movement *)
+	DriveControl.ActualPosition := 0;            (* Initialize actual position at 0 *)
+	DriveControl.ActualVelocity := 0;            (* Initialize actual velocity at 0 *)
+
+	(* Sensor Feedback Initialization *)
+	SensorFeedback.Position := 0;                (* Default: Sensor position 0 *)
+	SensorFeedback.Velocity := 0;                (* Default: Sensor velocity 0 *)
+	SensorFeedback.Fault_Inject_Enable := FALSE; (* No fault injection enabled by default *)
+	SensorFeedback.Fault_Value := 0;             (* No fault value injected *)
+
+	(* Locking Variables Initialization *)
+	Locking.Locked := FALSE;                     (* Initially, system is not locked *)
+	Locking.Unlocked := TRUE;                   (* Initially, system is not unlocked *)
+	Locking.Blocked := FALSE;                    (* Initially, system is not blocked *)
+	Locking.Unblocked := TRUE;                  (* Initially, system is not unblocked *)
+	Locking.ExchangerPosition := 0;              (* Default exchanger position is 0 *)
+
+	(* Safety Variables Initialization *)
+	Safety.STO_Activated := FALSE;               (* Safe Torque Off (STO) is not activated *)
+	Safety.STO_A := FALSE;                       (* STO_A initially disabled *)
+	Safety.STO_B := FALSE;                       (* STO_B initially disabled *)
+	Safety.Emergency_Stop := FALSE;              (* Emergency stop is not active *)
+	Safety.System_Reset := FALSE;                (* System reset is not triggered *)
+
+	(* Test Scenario Initialization *)
+	Simulation.TestScenario := 0;                 (* Default: No test scenario is running *)
+
+	(* Initialize motion step values *)
+	PositionStep := 5;                            (* Default step size for position *)
+	VelocityStep := 10;                           (* Default step size for velocity *)
+
+	(* Initialize Power Failure and Recovery Flags *)
+	PowerFailureDetected := FALSE;                (* No power failure detected initially *)
+
+	(* Initialize system to idle state *)
+	IF NOT Initialized THEN
+		(* Set all system values to default idle state *)
+		DriveState := 0;                          (* Set DriveState to Idle (0) *)
+		DriveControl.TargetPosition := 0;         (* Ensure target position is 0 at startup *)
+		DriveControl.TargetVelocity := 0;         (* Ensure target velocity is 0, no movement *)
+		Safety.STO_Activated := FALSE;           (* Ensure STO is not activated on startup *)
+		Locking.Locked := FALSE;                 (* Ensure system is not locked *)
+		Locking.Unlocked := FALSE;               (* Ensure system is not unlocked *)
+		Locking.Blocked := FALSE;                (* Ensure system is not blocked *)
+		Locking.Unblocked := FALSE;              (* Ensure system is not unblocked *)
+    
+		(* Set feedback values to 0 for a known idle state *)
+		SensorFeedback.Position := 0;
+		SensorFeedback.Velocity := 0;
+    
+		(* Indicate system has been initialized *)
+		Initialized := TRUE;
+	END_IF; 
+END_PROGRAM
+PROGRAM _CYCLIC
+(* Simulated Test Scenarios Using DriveState and TestSimulation *)
+	CASE Simulation.TestScenario OF
+		0:  (* Default - System Idle *)
+			DriveState := 0;  
+			DriveControl.TargetPosition := 0;
+			DriveControl.TargetVelocity := 0;
+
+		1:  (* Move Between 0° and 150° Based on Exchanger Position *)
+			IF Locking.ExchangerPosition = 90 THEN
+				DriveState := 1;  (* Moving to 150° *)
+			ELSIF Locking.ExchangerPosition = 0 THEN
+				DriveState := 2;  (* Moving to 0° *)
+			END_IF;
+
+		2: IF Safety.Emergency_Stop THEN
+				Safety.STO_Activated := TRUE;
+				Safety.STO_A := TRUE;
+				Safety.STO_B := TRUE;
+				DriveControl.TargetVelocity := 0;
+				DriveControl.TargetPosition := DriveControl.ActualPosition;  
+				DriveState := -1;  
+			END_IF;
+
+			IF Safety.System_Reset THEN
+				Safety.STO_Activated := FALSE;
+				Safety.STO_A := FALSE;
+				Safety.STO_B := FALSE;
+				DriveState := 0;  
+			END_IF;
+			
+		3:  (* Fault Injection Test *)
+			DriveState := -2;
+			SensorFeedback.Fault_Inject_Enable := TRUE;
+			SensorFeedback.Fault_Value := 15;
+
+		4:  (* Exchanger Blocked *)
+			DriveState := -3;
+			Locking.Blocked := TRUE;
+			Locking.Unblocked := FALSE;
+
+		5:  (* Drive in Fault State *)
+			DriveState := -4;
+			DriveControl.Statusword := 16#0008;  (* Fault State *)
+			Safety.STO_Activated := TRUE;
+			Safety.STO_A := TRUE;
+			Safety.STO_B := TRUE;
+			DriveControl.TargetVelocity := 0;
+			DriveControl.ActualVelocity := 0;  (* Ensure the drive stops immediately *)
+			
+		6: (* Power Failure Test - Simulating Power Loss and Recovery *)
+			DriveState := -5;
+			PowerFailureDetected := TRUE;  // Simulating power failure
+			Safety.STO_Activated := TRUE;  // Trigger STO immediately on power failure
+			Safety.STO_A := TRUE;  // Ensure STO_A is activated
+			Safety.STO_B := TRUE;  // Ensure STO_B is activated
+			DriveControl.TargetVelocity := 0;  // Stop motion
+			DriveControl.TargetPosition := DriveControl.ActualPosition;  // Stop motion
+        
+			IF NOT PowerFailureDetected THEN
+				Safety.STO_Activated := FALSE;  
+				Safety.STO_A := FALSE;  
+				Safety.STO_B := FALSE;  
+				DriveControl.TargetVelocity := 275;  
+				DriveControl.TargetPosition := 150;  
+			END_IF;
+	END_CASE;
+
+	(* Drive Motion Control Based on DriveState *)
+	CASE DriveState OF
+		0:  (* Idle State *)
+			DriveControl.TargetPosition := 0;
+			DriveControl.TargetVelocity := 0;
+
+		1:  (* Move latch to 150 when Exchanger is at 90° *)
+			DriveControl.TargetPosition := 150;
+			DriveControl.TargetVelocity := 275;
+
+		2:  (* Move latch to 0 when Exchanger is at 0° *)
+			DriveControl.TargetPosition := 0;
+			DriveControl.TargetVelocity := 275;
+
+		-1:  (* Emergency Stop State *)
+			Safety.STO_Activated := TRUE;
+			Safety.STO_A := TRUE;
+			Safety.STO_B := TRUE;
+			DriveControl.TargetVelocity := 0;
+			DriveControl.ActualVelocity := 0;
+			DriveControl.TargetPosition := DriveControl.ActualPosition;
+			IF Safety.System_Reset THEN
+				Safety.Emergency_Stop := FALSE;
+				Safety.STO_Activated := FALSE;
+				Safety.STO_A := FALSE;
+				Safety.STO_B := FALSE;
+				DriveState := 0;  (* Reset system to normal operation *)
+			END_IF;
+			
+		-2:  (* Fault Injection Test - Now Correctly Modifies Sensor Feedback *)
+			IF SensorFeedback.Fault_Inject_Enable THEN
+				SensorFeedback.Position := DriveControl.ActualPosition + SensorFeedback.Fault_Value;
+				SensorFeedback.Velocity := DriveControl.ActualVelocity + SensorFeedback.Fault_Value;
+			ELSE
+				SensorFeedback.Position := DriveControl.ActualPosition;
+				SensorFeedback.Velocity := DriveControl.ActualVelocity;
+			END_IF;
+
+		-3:  (* Exchanger Blocked State - Stop Motion *)
+			DriveControl.TargetVelocity := 0;
+			DriveControl.ActualVelocity := 0;
+
+		-4:  (* Drive Fault Detected - Safe Torque Off *)
+			Safety.STO_Activated := TRUE;
+			Safety.STO_A := TRUE;
+			Safety.STO_B := TRUE;
+			DriveControl.TargetVelocity := 0;
+			DriveControl.ActualVelocity := 0;  (* Ensure motion stops completely *)
+			(* Optional: Require an explicit reset condition to clear the fault *)
+			IF Safety.System_Reset THEN
+				Safety.STO_Activated := FALSE;
+				Safety.STO_A := FALSE;
+				Safety.STO_B := FALSE;
+				DriveState := 0;  (* Reset system to normal operation *)
+			END_IF;
+			
+		-5: (* Power Failure State *)
+			Safety.STO_Activated := TRUE;
+			Safety.STO_A := TRUE;
+			Safety.STO_B := TRUE;
+			DriveControl.TargetVelocity := 0;
+			DriveControl.ActualVelocity := 0;
+
+			(* Ensure recovery logic is handled properly *)
+			IF PowerRestored THEN
+				PowerFailureDetected := FALSE;  // Proper reset after power recovery
+				Safety.STO_Activated := FALSE;
+				Safety.STO_A := FALSE;
+				Safety.STO_B := FALSE;
+				DriveState := 0;  (* Reset to initial state *)
+			END_IF;
+	END_CASE;
+
+	
+	(* Simulating Smooth Motion: Acceleration and Deceleration *)
+	IF DriveControl.TargetPosition > DriveControl.ActualPosition THEN
+		DriveControl.ActualPosition := DriveControl.ActualPosition + PositionStep;
+	ELSIF DriveControl.TargetPosition < DriveControl.ActualPosition THEN
+		DriveControl.ActualPosition := DriveControl.ActualPosition - PositionStep;
+	END_IF;
+
+	IF ABS(DriveControl.TargetPosition - DriveControl.ActualPosition) < 50 THEN
+		DriveControl.ActualVelocity := DriveControl.TargetVelocity / 2;  (* Slow down near end *)
+	ELSE
+		DriveControl.ActualVelocity := DriveControl.TargetVelocity;
+	END_IF;
+
+	
+	(* Stop Motion at Final Position *)
+	IF DriveControl.ActualPosition = DriveControl.TargetPosition THEN
+		DriveControl.TargetVelocity := 0;
+		DriveControl.ActualVelocity := 0;
+		MotionComplete := TRUE;
+	ELSE
+		MotionComplete := FALSE;
+	END_IF;
+	(* NEW CONDITION: Only set MotionComplete to TRUE if in DriveState 1 or 2 and position matches target *)
+	IF (DriveState = 1 OR DriveState = 2) AND (DriveControl.ActualPosition = DriveControl.TargetPosition) THEN
+		MotionComplete := TRUE;  (* Set to TRUE only if in DriveState 1 or 2 and position matches target *)
+	ELSE
+		MotionComplete := FALSE;  (* Otherwise, ensure MotionComplete remains FALSE *)
+	END_IF;
+	
+	(* Locking at Final Positions *)
+	Locking.Locked := (DriveControl.ActualPosition = 150);
+	Locking.Unlocked := (DriveControl.ActualPosition = 0);
+	
+	(* Locking logic to ensure Unblocked is TRUE unless Blocked is TRUE *)
+	IF Locking.Blocked THEN
+		Locking.Unblocked := FALSE;
+	ELSE
+		Locking.Unblocked := TRUE;
+	END_IF;
+	
+	
+	(* Emergency Stop Logic *)
+	IF Safety.Emergency_Stop THEN
+		Safety.STO_Activated := TRUE;  // Trigger STO when emergency stop is activated
+		Safety.STO_A := TRUE;  // Trigger STO_A
+		Safety.STO_B := TRUE;  // Trigger STO_B for redundancy
+		DriveControl.TargetVelocity := 0;  // Stop motion immediately
+		DriveControl.ActualVelocity := 0;  // Ensure actual velocity is zero
+		DriveControl.TargetPosition := DriveControl.ActualPosition;  // Maintain position to prevent movement
+	ELSE
+		(* Ensure Reset Condition is Checked Before Deactivating STO *)
+		IF Safety.System_Reset THEN
+			Safety.STO_Activated := FALSE;  // Only reset STO if System_Reset is triggered
+			Safety.STO_A := FALSE;
+			Safety.STO_B := FALSE;
+			DriveState := 0;  // Reset drive state to normal operation
+		END_IF;
+	END_IF;
+	
+	(* Trigger STO_A and STO_B logic based on STO_Activated *)
+	IF Safety.STO_Activated THEN
+		Safety.STO_A := TRUE;  // Trigger STO_A
+		Safety.STO_B := TRUE;  // Trigger STO_B for redundancy
+	ELSE
+		Safety.STO_A := FALSE;  // Deactivate STO_A when STO_Activated is false
+		Safety.STO_B := FALSE;  // Deactivate STO_B when STO_Activated is false
+	END_IF;
+	
+	(* Passing Data to Magnetostrictive Sensor (Ensuring Fault Injection Works) *)
+	IF SensorFeedback.Fault_Inject_Enable THEN
+		SensorFeedback.Position := DriveControl.ActualPosition + SensorFeedback.Fault_Value;
+		SensorFeedback.Velocity := DriveControl.ActualVelocity + SensorFeedback.Fault_Value;
+	ELSE
+		SensorFeedback.Position := DriveControl.ActualPosition;
+		SensorFeedback.Velocity := DriveControl.ActualVelocity;
+	END_IF;
+	
+	(* Power Failure Detection Logic *)
+	IF PowerFailureDetected THEN
+		Safety.STO_Activated := TRUE;
+		Safety.STO_A := TRUE;
+		Safety.STO_B := TRUE;
+		DriveControl.TargetVelocity := 0;
+		DriveControl.TargetPosition := DriveControl.ActualPosition;
+	ELSE
+		IF PowerRestored THEN
+			PowerFailureDetected := FALSE;
+			Safety.STO_Activated := FALSE;
+			Safety.STO_A := FALSE;
+			Safety.STO_B := FALSE;
+		END_IF;
+	END_IF;
+END_PROGRAM
+
+PROGRAM _EXIT
+(* Handle System Reset or Exit Conditions *)
+	IF Safety.System_Reset THEN
+		Safety.Emergency_Stop := FALSE;
+		Safety.STO_Activated := FALSE;
+		DriveControl.Controlword := 0;
+		DriveControl.TargetVelocity := 0;
+		DriveControl.TargetPosition := 0;
+		DriveControl.Statusword := 0;
+		Simulation.TestScenario := 0;
+	END_IF	 
+END_PROGRAM
+
+
